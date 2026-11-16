@@ -5,7 +5,7 @@
  */
 
 /* ==================== 1. 通用 JSONP 请求器 ==================== */
-function jsonp(url, callbackParam = 'cb', timeout = 10000) {
+function jsonp(url, callbackParam = 'cb', timeout = 15000) {
   return new Promise((resolve, reject) => {
     const cbName = '__jp_' + Math.random().toString(36).slice(2);
     const script = document.createElement('script');
@@ -42,6 +42,7 @@ const API = {
   suggest: 'https://searchapi.eastmoney.com/api/suggest/get'
 };
 const API_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8';
+const KLINE_UT = 'fa5fd1943c7b386f172d6893dbfba10b';
 
 /**
  * 代码推断 secid（回车直达时的兜底，搜索候选优先用接口返回的 MktNum）
@@ -84,17 +85,18 @@ function guessMarket(secType) {
 
 /** 获取 K 线（前复权），返回 { name, code, kline } */
 async function fetchKline(secid, klt) {
-  const params = new URLSearchParams({
-    secid: secid,
-    fields1: 'f1,f2,f3,f4,f5,f6',
-    fields2: 'f51,f52,f53,f54,f55,f56,f57,f58',
-    klt: klt || '101',
-    fqt: '1',
-    beg: '0',
-    end: '20500101',
-    lmt: '600'
-  });
-  const res = await jsonp(API.kline + '?' + params.toString());
+  // 手动拼接，保持与已验证可用的 URL 完全一致（URLSearchParams 会把逗号编码成 %2C）
+  const url = API.kline
+    + '?secid=' + encodeURIComponent(secid)
+    + '&ut=' + KLINE_UT
+    + '&fields1=f1,f2,f3,f4,f5,f6'
+    + '&fields2=f51,f52,f53,f54,f55,f56,f57,f58'
+    + '&klt=' + (klt || '101')
+    + '&fqt=1'
+    + '&beg=0'
+    + '&end=20500101'
+    + '&lmt=600';
+  const res = await jsonp(url);
   if (!res || !res.data || !res.data.klines || !res.data.klines.length) {
     throw new Error('未获取到K线数据，请确认代码是否正确');
   }
@@ -110,6 +112,43 @@ async function fetchKline(secid, klt) {
     };
   });
   return { name: d.name, code: d.code, kline };
+}
+
+/**
+ * 演示数据：仅当真实行情接口不可达时兜底使用，界面会明确标注"演示数据"。
+ * 基于 secid 做确定性伪随机，同一标的每次生成结果一致，避免刷新后走势乱跳。
+ */
+function generateDemoKline(secid, klt, fallbackName) {
+  let seed = 0;
+  for (let i = 0; i < (secid || '').length; i++) {
+    seed = (seed * 31 + secid.charCodeAt(i)) >>> 0;
+  }
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  const base = 20 + rand() * 180;          // 基础价位
+  const drift = (rand() - 0.45) * 0.004;   // 轻微趋势
+  const count = 300;
+  const stepMs = (klt === '103' ? 30 : klt === '102' ? 7 : 1) * 86400000;
+  const startDay = Date.now() - count * stepMs;
+  const kline = [];
+  let price = base;
+  for (let i = 0; i < count; i++) {
+    const open = price;
+    const change = (rand() - 0.5) * base * 0.05 + base * drift;
+    const close = Math.max(1, open + change);
+    const high = Math.max(open, close) * (1 + rand() * 0.02);
+    const low = Math.min(open, close) * (1 - rand() * 0.02);
+    const volume = Math.floor(50000 + rand() * 900000);
+    const d = new Date(startDay + i * stepMs);
+    const time = d.getFullYear() + '-'
+      + String(d.getMonth() + 1).padStart(2, '0') + '-'
+      + String(d.getDate()).padStart(2, '0');
+    kline.push({ time, open, close, high, low, volume, amount: close * volume });
+    price = close;
+  }
+  return { name: fallbackName || '', code: (secid || '').split('.')[1] || '', kline, demo: true };
 }
 
 /* ==================== 3. 应用主体 ==================== */
@@ -237,6 +276,11 @@ class StockApp {
     ['cbMa5', 'cbMa10', 'cbMa20', 'cbVol'].forEach(id => {
       this.$(id).addEventListener('change', () => this.renderChart());
     });
+
+    // 演示数据状态下，点击股票信息条的"刷新"按钮重试真实接口
+    this.$('retryBtn').addEventListener('click', () => {
+      if (this.current) this.openStock(this.current);
+    });
   }
 
   /* --- 搜索建议 --- */
@@ -272,6 +316,20 @@ class StockApp {
     this.openStock(s);
   }
 
+  /* --- 取数：真实接口优先，失败降级为演示数据 --- */
+  async getKline(stock) {
+    try {
+      const kd = await fetchKline(stock.secid, this.klt);
+      this.isDemo = false;
+      return kd;
+    } catch (e) {
+      this.isDemo = true;
+      const kd = generateDemoKline(stock.secid, this.klt, stock.name || stock.code);
+      this.toast('行情接口不可用，已显示演示数据');
+      return kd;
+    }
+  }
+
   /* --- 核心：打开股票 --- */
   async openStock(stock) {
     this.current = stock;
@@ -281,34 +339,27 @@ class StockApp {
     this.resetQuote();
     this.updateWatchBtn();
 
-    try {
-      const kd = await fetchKline(stock.secid, this.klt);
-      const name = kd.name || stock.name || stock.code;
-      this.current = { ...stock, name };
-      this.$('stockName').textContent = name;
-      this.$('stockCode').textContent = kd.code || stock.code || '';
-      this.$('stockMarket').textContent = stock.market || this.marketLabel(stock.secid);
+    const kd = await this.getKline(stock);
+    const name = kd.name || stock.name || stock.code;
+    this.current = { ...stock, name };
+    this.$('stockName').textContent = name;
+    this.$('stockCode').textContent = kd.code || stock.code || '';
+    this.$('stockMarket').textContent = (stock.market || this.marketLabel(stock.secid))
+      + (this.isDemo ? ' · 演示数据' : '');
 
-      this.kline = kd.kline;
-      this.renderChart();
-      this.updateQuoteFromKline(kd.kline);
-      this.updateWatchBtn();
-    } catch (e) {
-      this.$('stockName').textContent = stock.name || stock.code;
-      this.$('stockMarket').textContent = '数据加载失败';
-      this.toast(e.message || '数据加载失败');
-      this.chart.clear();
-    }
+    this.kline = kd.kline;
+    this.renderChart();
+    this.updateQuoteFromKline(kd.kline);
+    this.updateWatchBtn();
   }
 
   async loadChart(secid) {
-    try {
-      const kd = await fetchKline(secid, this.klt);
-      this.kline = kd.kline;
-      this.renderChart();
-    } catch (e) {
-      this.toast(e.message || 'K线加载失败');
-    }
+    const kd = await this.getKline(this.current || { secid });
+    this.kline = kd.kline;
+    this.renderChart();
+    // 切换周期后同步修正市场标签的演示标记
+    const base = (this.current && this.current.market) || this.marketLabel(secid);
+    this.$('stockMarket').textContent = base + (this.isDemo ? ' · 演示数据' : '');
   }
 
   marketLabel(secid) {
