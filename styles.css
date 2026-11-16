@@ -39,6 +39,7 @@ body {
   padding: 0 20px;
 }
 .brand { font-size: 1.15rem; font-weight: 700; white-space: nowrap; }
+.brand-en { font-size: 0.8rem; font-weight: 500; color: var(--muted); margin-left: 2px; letter-spacing: 0.3px; }
 .logo { margin-right: 6px; }
 .nav-hint { margin-left: auto; color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
 

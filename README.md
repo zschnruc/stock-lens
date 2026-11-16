@@ -1,6 +1,8 @@
-# 看盘终端 · Stock Viewer
+# 观盘 StockLens
 
 一个**零部署、双击即用**的纯前端看盘工具：输入股票名称或代码即可查看 K 线，支持自选股收藏，覆盖 A 股、港股、美股。
+
+> 在线体验：https://zschnruc.github.io/stock-lens/
 
 ## 功能特性
 
@@ -44,7 +46,7 @@
 ## 项目结构
 
 ```
-opencodexx/
+stock-lens/
 ├── index.html    # 页面骨架与静态结构
 ├── styles.css    # 深色主题样式
 ├── app.js        # 数据层 + 应用主体 + 图表渲染

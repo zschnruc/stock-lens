@@ -1,4 +1,4 @@
-# 看盘终端 · 技术设计文档
+# 观盘 StockLens · 技术设计文档
 
 | 项目 | 内容 |
 | --- | --- |
@@ -249,7 +249,7 @@ input 输入 → 节流 250ms → searchStocks(kw)
 ## 8. 文件结构
 
 ```
-opencodexx/
+stock-lens/
 ├── index.html    # 页面骨架与静态结构
 ├── styles.css    # 深色主题样式
 ├── app.js        # 数据层 + 应用主体 + 图表渲染
