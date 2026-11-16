@@ -1,20 +1,24 @@
 /**
  * 看盘终端
- * 数据层：JSONP 对接东方财富公开行情接口（file:// 双击即可运行）
+ * 数据层：JSONP 对接腾讯证券公开行情接口（file:// 双击即可运行）
  * 详见 TECH.md
  */
 
-/* ==================== 1. 通用 JSONP 请求器 ==================== */
-function jsonp(url, callbackParam = 'cb', timeout = 15000) {
+/* ==================== 1. JSONP 请求器（变量赋值式） ====================
+ * 腾讯接口返回 "变量名={...}" 而非 "函数名({...})"，
+ * 故用 <script> 加载后读取全局变量的方式取值，支持 file:// 跨域。
+ */
+function jsonpVar(url, varName, timeout = 15000) {
   return new Promise((resolve, reject) => {
-    const cbName = '__jp_' + Math.random().toString(36).slice(2);
     const script = document.createElement('script');
     let done = false;
+    let poll = null;
 
     const cleanup = () => {
       clearTimeout(timer);
+      if (poll) clearInterval(poll);
       if (script.parentNode) script.parentNode.removeChild(script);
-      try { delete window[cbName]; } catch (e) { window[cbName] = undefined; }
+      try { delete window[varName]; } catch (e) { window[varName] = undefined; }
     };
     const finish = (fn, arg) => {
       if (done) return;
@@ -27,91 +31,110 @@ function jsonp(url, callbackParam = 'cb', timeout = 15000) {
       finish(reject, new Error('请求超时，请检查网络'));
     }, timeout);
 
-    window[cbName] = (data) => finish(resolve, data);
+    script.onload = () => {
+      if (window[varName] !== undefined) finish(resolve, window[varName]);
+    };
+    // 兼容赋值早于 onload 的情况，轮询兜底
+    poll = setInterval(() => {
+      if (window[varName] !== undefined) finish(resolve, window[varName]);
+    }, 50);
     script.onerror = () => finish(reject, new Error('网络错误，无法连接数据服务器'));
 
-    const sep = url.indexOf('?') >= 0 ? '&' : '?';
-    script.src = url + sep + callbackParam + '=' + encodeURIComponent(cbName);
+    script.src = url;
     document.head.appendChild(script);
   });
 }
 
-/* ==================== 2. 东方财富接口封装 ==================== */
+/* ==================== 2. 腾讯证券接口封装 ==================== */
 const API = {
-  kline: 'https://push2his.eastmoney.com/api/qt/stock/kline/get',
-  suggest: 'https://searchapi.eastmoney.com/api/suggest/get'
+  klineCN: 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get',       // A股 / 港股
+  klineUS: 'https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get',     // 美股
+  suggest: 'https://smartbox.gtimg.cn/s3/'
 };
-const API_TOKEN = 'D43BF722C8E33BDC906FB84D85E326E8';
-const KLINE_UT = 'fa5fd1943c7b386f172d6893dbfba10b';
 
-/**
- * 代码推断 secid（回车直达时的兜底，搜索候选优先用接口返回的 MktNum）
- *  market.code 规则：1=沪  0=深/北交所  116=港股  105=美股(纳斯达克)
- */
-function guessSecid(input) {
+// 腾讯代码体系：sh/sz/bj + 6位(A股)、hk + 5位(港股)、us + 代码.后缀(美股)
+function toPeriod(klt) {
+  return klt === '103' ? 'month' : klt === '102' ? 'week' : 'day';
+}
+
+/** 数字代码推断腾讯 symbol（回车直达兜底；字母代码走搜索拿准确后缀） */
+function guessSymbol(input) {
   const s = input.trim().toUpperCase();
   if (/^\d{6}$/.test(s)) {
-    if (/^[69]/.test(s)) return '1.' + s;        // 沪市 / 科创板
-    return '0.' + s;                             // 深市 / 北交所
+    if (/^[69]/.test(s)) return 'sh' + s;
+    if (/^[48]/.test(s)) return 'bj' + s;
+    return 'sz' + s;
   }
-  if (/^\d{5}$/.test(s)) return '116.' + s;      // 港股
-  if (/^[A-Z][A-Z.\-]*$/.test(s)) return '105.' + s; // 美股（默认纳斯达克）
+  if (/^\d{5}$/.test(s)) return 'hk' + s;
   return null;
 }
 
-/** 搜索联想：返回 [{ code, name, secid, market }] */
+/**
+ * 搜索联想：v_hint="市场~代码~名称~拼音~类型^..."
+ * 返回 [{ code, name, secid, market }]，secid 即腾讯 symbol
+ */
 async function searchStocks(keyword) {
-  const params = new URLSearchParams({
-    input: keyword, type: '14', token: API_TOKEN, count: '10'
+  try { delete window.v_hint; } catch (e) { window.v_hint = undefined; }
+  const url = API.suggest + '?q=' + encodeURIComponent(keyword) + '&t=all';
+  const hint = await jsonpVar(url, 'v_hint');
+  if (typeof hint !== 'string' || !hint) return [];
+  const out = [];
+  hint.split('^').forEach(seg => {
+    const p = seg.split('~');
+    if (p.length < 3) return;
+    const market = p[0].toLowerCase();
+    if (!/^(sh|sz|bj|hk|us)$/.test(market)) return;
+    const rawCode = p[1];
+    // 美股代码含后缀(如 aapl.oq)，统一大写；其余保持数字
+    const code = market === 'us' ? rawCode.toUpperCase() : rawCode;
+    const symbol = market + code;
+    out.push({
+      code,
+      name: p[2],
+      secid: symbol,
+      market: { sh: '沪A', sz: '深A', bj: '北交所', hk: '港股', us: '美股' }[market] || ''
+    });
   });
-  const data = await jsonp(API.suggest + '?' + params.toString(), 'cb');
-  const rows = data && data.QuotationCodeTable && data.QuotationCodeTable.Data;
-  if (!Array.isArray(rows)) return [];
-  return rows.map(r => {
-    const mkt = r.MktNum != null ? r.MktNum : guessMarket(r.SecurityType);
-    return {
-      code: r.Code,
-      name: r.Name,
-      secid: mkt + '.' + r.Code,
-      market: r.SecurityTypeName || ''
-    };
-  });
-}
-
-// 接口未给 MktNum 时的最后兜底
-function guessMarket(secType) {
-  return 0;
+  return out.slice(0, 10);
 }
 
 /** 获取 K 线（前复权），返回 { name, code, kline } */
-async function fetchKline(secid, klt) {
-  // 手动拼接，保持与已验证可用的 URL 完全一致（URLSearchParams 会把逗号编码成 %2C）
-  const url = API.kline
-    + '?secid=' + encodeURIComponent(secid)
-    + '&ut=' + KLINE_UT
-    + '&fields1=f1,f2,f3,f4,f5,f6'
-    + '&fields2=f51,f52,f53,f54,f55,f56,f57,f58'
-    + '&klt=' + (klt || '101')
-    + '&fqt=1'
-    + '&beg=0'
-    + '&end=20500101'
-    + '&lmt=600';
-  const res = await jsonp(url);
-  if (!res || !res.data || !res.data.klines || !res.data.klines.length) {
+async function fetchKline(symbol, klt) {
+  const period = toPeriod(klt);
+  const isUS = /^us/i.test(symbol);
+  const endpoint = isUS ? API.klineUS : API.klineCN;
+  const varName = '__tq_' + Math.random().toString(36).slice(2);
+  const param = symbol + ',' + period + ',,,600,qfq';
+  const url = endpoint + '?param=' + encodeURIComponent(param) + '&_var=' + varName;
+  const res = await jsonpVar(url, varName);
+  if (!res || res.code !== 0 || !res.data) {
     throw new Error('未获取到K线数据，请确认代码是否正确');
   }
-  const d = res.data;
-  // 前复权早期价格可能为负，仅取最近 500 根
-  const recent = d.klines.slice(-500);
-  const kline = recent.map(line => {
-    const p = line.split(',');
+  const node = res.data[symbol] || Object.values(res.data)[0];
+  if (!node) throw new Error('未获取到K线数据，请确认代码是否正确');
+  const arr = node['qfq' + period] || node[period] || node.qfqday || node.day;
+  if (!Array.isArray(arr) || !arr.length) {
+    throw new Error('未获取到K线数据，请确认代码是否正确');
+  }
+  const kline = arr.slice(-500).map(row => {
+    const close = +row[2], vol = +row[5];
+    // 港股/美股数组带成交额(index 8)，A股只有6字段，用 收盘价×成交量×100 估算
+    const amount = row[8] != null && !isNaN(+row[8]) && +row[8] > 0
+      ? +row[8]
+      : close * vol * 100;
     return {
-      time: p[0],
-      open: +p[1], close: +p[2], high: +p[3], low: +p[4],
-      volume: +p[5], amount: +p[6]
+      time: row[0],
+      open: +row[1], close, high: +row[3], low: +row[4],
+      volume: vol, amount
     };
-  });
-  return { name: d.name, code: d.code, kline };
+  }).filter(k => k.close > 0 && k.high >= k.low);
+  if (!kline.length) throw new Error('未获取到K线数据，请确认代码是否正确');
+  // 名称从 qt 实时节点取
+  let name = '';
+  const qtNode = node.qt && node.qt[symbol];
+  if (qtNode && qtNode[1]) name = qtNode[1];
+  const displayCode = symbol.replace(/^(sh|sz|bj|hk|us)/i, '');
+  return { name, code: displayCode, kline };
 }
 
 /**
@@ -148,16 +171,20 @@ function generateDemoKline(secid, klt, fallbackName) {
     kline.push({ time, open, close, high, low, volume, amount: close * volume });
     price = close;
   }
-  return { name: fallbackName || '', code: (secid || '').split('.')[1] || '', kline, demo: true };
+  return {
+    name: fallbackName || '',
+    code: (secid || '').replace(/^(sh|sz|bj|hk|us)/i, ''),
+    kline, demo: true
+  };
 }
 
 /* ==================== 3. 应用主体 ==================== */
 const WATCHLIST_KEY = 'stock_viewer_watchlist';
 const DEFAULT_WATCHLIST = [
-  { secid: '1.600519', code: '600519', name: '贵州茅台' },
-  { secid: '0.300750', code: '300750', name: '宁德时代' },
-  { secid: '116.00700', code: '00700', name: '腾讯控股' },
-  { secid: '105.AAPL', code: 'AAPL', name: '苹果' }
+  { secid: 'sh600519', code: '600519', name: '贵州茅台' },
+  { secid: 'sz300750', code: '300750', name: '宁德时代' },
+  { secid: 'hk00700', code: '00700', name: '腾讯控股' },
+  { secid: 'usAAPL.OQ', code: 'AAPL.OQ', name: '苹果' }
 ];
 
 class StockApp {
@@ -175,16 +202,27 @@ class StockApp {
     this.bindEvents();
     this.renderWatchlist();
     // 默认展示贵州茅台
-    this.openStock({ secid: '1.600519', name: '贵州茅台', code: '600519', market: '沪A' });
+    this.openStock({ secid: 'sh600519', name: '贵州茅台', code: '600519', market: '沪A' });
   }
 
   /* --- 本地存储 --- */
   loadWatchlist() {
     try {
       const s = JSON.parse(localStorage.getItem(WATCHLIST_KEY));
-      if (Array.isArray(s)) return s;
+      if (Array.isArray(s)) return s.map(w => this.migrateStock(w));
     } catch (e) { /* 读取异常兜底为默认列表 */ }
     return DEFAULT_WATCHLIST.slice();
+  }
+  // 兼容旧版东财 secid（如 1.600519）迁移到腾讯格式（sh600519）
+  migrateStock(w) {
+    const old = (w.secid || '').split('.');
+    if (old.length === 2 && /^\d+$/.test(old[1])) {
+      const map = { '1': 'sh', '0': 'sz', '116': 'hk', '105': 'us', '106': 'us', '107': 'us' };
+      if (map[old[0]]) {
+        return { ...w, secid: map[old[0]] + old[1] };
+      }
+    }
+    return w;
   }
   saveWatchlist() {
     localStorage.setItem(WATCHLIST_KEY, JSON.stringify(this.watchlist));
@@ -245,9 +283,9 @@ class StockApp {
           this.pickSuggestion(this.suggestions[this.suggestIndex]);
         } else {
           const kw = input.value.trim().toUpperCase();
-          const secid = guessSecid(kw);
-          if (secid) {
-            this.openStock({ secid, name: kw, code: kw, market: this.marketLabel(secid) });
+          const symbol = guessSymbol(kw);
+          if (symbol) {
+            this.openStock({ secid: symbol, name: kw, code: kw, market: this.marketLabel(symbol) });
           } else if (this.suggestions.length) {
             this.pickSuggestion(this.suggestions[0]);
           }
@@ -363,10 +401,9 @@ class StockApp {
   }
 
   marketLabel(secid) {
-    const p = (secid || '').split('.')[0];
+    const p = (secid || '').slice(0, 2).toLowerCase();
     return {
-      '1': '沪A', '0': '深A', '116': '港股',
-      '105': '美股', '106': '美股', '107': '美股'
+      sh: '沪A', sz: '深A', bj: '北交所', hk: '港股', us: '美股'
     }[p] || '股票';
   }
 
