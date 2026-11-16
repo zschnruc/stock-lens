@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>看盘终端</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+</head>
+<body>
+  <header class="navbar">
+    <div class="brand"><span class="logo">📊</span> 看盘终端</div>
+
+    <div class="search-wrap">
+      <input id="searchInput" type="text" autocomplete="off" placeholder="输入名称或代码：茅台 / 600519 / 腾讯 / AAPL / 00700">
+      <div id="suggestBox" class="suggest-box"></div>
+    </div>
+
+    <div class="nav-hint">A股 · 港股 · 美股</div>
+  </header>
+
+  <main class="layout">
+    <section class="chart-area">
+      <div class="stock-bar">
+        <div class="stock-id">
+          <span id="stockName" class="name">--</span>
+          <span id="stockCode" class="code">--</span>
+          <span id="stockMarket" class="tag">--</span>
+          <button id="addWatchBtn" class="btn btn-primary">☆ 加自选</button>
+        </div>
+        <div class="stock-price">
+          <span id="curPrice" class="price">--</span>
+          <span id="priceChange" class="change">--</span>
+        </div>
+      </div>
+
+      <div class="metrics-bar">
+        <div class="metric"><label>今开</label><b id="mOpen">--</b></div>
+        <div class="metric"><label>最高</label><b id="mHigh">--</b></div>
+        <div class="metric"><label>最低</label><b id="mLow">--</b></div>
+        <div class="metric"><label>昨收</label><b id="mPrev">--</b></div>
+        <div class="metric"><label>成交量</label><b id="mVol">--</b></div>
+        <div class="metric"><label>成交额</label><b id="mAmount">--</b></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="periods">
+          <button class="period active" data-period="101">日K</button>
+          <button class="period" data-period="102">周K</button>
+          <button class="period" data-period="103">月K</button>
+        </div>
+        <div class="indicators">
+          <label><input type="checkbox" id="cbMa5" checked><span class="ma5">MA5</span></label>
+          <label><input type="checkbox" id="cbMa10" checked><span class="ma10">MA10</span></label>
+          <label><input type="checkbox" id="cbMa20" checked><span class="ma20">MA20</span></label>
+          <label><input type="checkbox" id="cbVol" checked>成交量</label>
+        </div>
+      </div>
+
+      <div id="chart" class="chart"></div>
+      <div class="chart-note">行情数据来自东方财富 · 前复权 · 非实时行情 · 仅供参考</div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="side-head">
+        <span>自选股</span>
+        <span id="wlCount" class="count">0</span>
+      </div>
+      <div id="watchlist" class="watchlist"></div>
+      <div class="side-foot">数据存于本地浏览器，清除浏览器数据将丢失</div>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
